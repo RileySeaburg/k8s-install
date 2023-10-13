@@ -1,26 +1,42 @@
-echo -e '#!/bin/bash\n\
-if [[ $EUID -ne 0 ]]; then\n\
-   echo "This script must be run as root" \n\
-   exit 1\n\
-fi\n\
-if ! [ -x "$(command -v kubeadm)" ] || ! [ -x "$(command -v kubelet)" ] || ! [ -x "$(command -v kubectl)" ]; then\n\
-  echo "Error: kubeadm, kubelet or kubectl are not installed." >&2\n\
-  exit 1\n\
-fi\n\
-POD_NETWORK_CIDR="10.244.0.0/16"\n\
-\n\
-# Initializing Master Node\n\
-kubeadm init --pod-network-cidr=$POD_NETWORK_CIDR\n\
-\n\
-# To start using your cluster, you need to run the following as a regular user\n\
-mkdir -p $HOME/.kube\n\
-sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config\n\
-sudo chown $(id -u):$(id -g) $HOME/.kube/config\n\
-\n\
-# Installing a Pod Network (We'\''ll use Calico as an example)\n\
-kubectl --kubeconfig /etc/kubernetes/admin.conf create -f https://docs.projectcalico.org/manifests/tigera-operator.yaml\n\
-kubectl --kubeconfig /etc/kubernetes/admin.conf create -f https://docs.projectcalico.org/manifests/custom-resources.yaml\n\
-\n\
-echo "Kubernetes Master setup is complete!"\n\
-echo "To join a node to this cluster, run the following on the node:"\n\
-kubeadm token create --print-join-command' > setup_k8s_cluster.sh && bash setup_k8s_cluster.sh
+echo -e '#!/bin/bash
+
+set -e # Exit on any error
+set -o pipefail # Will return the exit status of make if it fails
+
+LOG_FILE="/tmp/k8s_setup.log"
+
+function log {
+  echo "$(date) | $1" | tee -a $LOG_FILE
+}
+
+function error_exit {
+  echo "$(date) | ${1:-"Unknown Error"}" | tee -a $LOG_FILE
+  exit 1
+}
+
+if [[ $EUID -ne 0 ]]; then
+  error_exit "This script must be run as root"
+fi
+
+if ! [ -x "$(command -v kubeadm)" ] || ! [ -x "$(command -v kubelet)" ] || ! [ -x "$(command -v kubectl)" ]; then
+  error_exit "Error: kubeadm, kubelet or kubectl are not installed."
+fi
+
+POD_NETWORK_CIDR="10.244.0.0/16"
+
+log "Initializing Master Node"
+kubeadm init --pod-network-cidr=$POD_NETWORK_CIDR || error_exit "kubeadm init failed"
+
+log "Configuring kubeconfig for the regular user"
+USER_HOME=$(eval echo ~${SUDO_USER:-})
+mkdir -p $USER_HOME/.kube
+cp -i /etc/kubernetes/admin.conf $USER_HOME/.kube/config || error_exit "Failed to copy kubeconfig"
+chown $(id -u ${SUDO_USER:-}):$(id -g ${SUDO_USER:-}) $USER_HOME/.kube/config || error_exit "Failed to change kubeconfig ownership"
+
+log "Installing Calico"
+kubectl --kubeconfig /etc/kubernetes/admin.conf create -f https://docs.projectcalico.org/manifests/tigera-operator.yaml || error_exit "Failed to apply tigera-operator.yaml"
+kubectl --kubeconfig /etc/kubernetes/admin.conf create -f https://docs.projectcalico.org/manifests/custom-resources.yaml || error_exit "Failed to apply custom-resources.yaml"
+
+log "Kubernetes Master setup is complete!"
+echo "To join a node to this cluster, run the following on the node:"
+kubeadm token create --print-join-command || error_exit "Failed to create join token"' > setup_k8s_cluster.sh && bash setup_k8s_cluster.sh
